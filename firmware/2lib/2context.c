@@ -49,6 +49,23 @@ vb2_error_t vb2api_init(void *workbuf, uint32_t size,
 	return VB2_SUCCESS;
 }
 
+/**
+ * Return the current boot mode (normal, recovery, or dev).
+ *
+ * @param ctx          Vboot context
+ * @return Current boot mode (see vb2_boot_mode enum).
+ */
+static enum vb2_boot_mode get_boot_mode(struct vb2_context *ctx)
+{
+	if (ctx->flags & VB2_CONTEXT_RECOVERY_MODE)
+		return VB2_BOOT_MODE_MANUAL_RECOVERY;
+
+	if (ctx->flags & VB2_CONTEXT_DEVELOPER_MODE)
+		return VB2_BOOT_MODE_DEVELOPER;
+
+	return VB2_BOOT_MODE_NORMAL;
+}
+
 #pragma GCC diagnostic push
 /* Don't warn for the version_minor check even if the checked version is 0. */
 #pragma GCC diagnostic ignored "-Wtype-limits"
@@ -57,6 +74,7 @@ vb2_error_t vb2api_relocate(void *new_workbuf, const void *cur_workbuf,
 {
 	const struct vb2_shared_data *cur_sd = cur_workbuf;
 	struct vb2_shared_data *new_sd;
+	bool update_bootmode = false;
 
 	if (!vb2_aligned(new_workbuf, VB2_WORKBUF_ALIGN))
 		return VB2_ERROR_WORKBUF_ALIGN;
@@ -66,8 +84,16 @@ vb2_error_t vb2api_relocate(void *new_workbuf, const void *cur_workbuf,
 		return VB2_ERROR_SHARED_DATA_MAGIC;
 
 	if (cur_sd->struct_version_major != VB2_SHARED_DATA_VERSION_MAJOR ||
-	    cur_sd->struct_version_minor < VB2_SHARED_DATA_VERSION_MINOR)
-		return VB2_ERROR_SHARED_DATA_VERSION;
+	    cur_sd->struct_version_minor < VB2_SHARED_DATA_VERSION_MINOR) {
+		if (cur_sd->struct_version_major == VB2_SHARED_DATA_VERSION_MAJOR &&
+		    cur_sd->struct_version_minor == 0 &&
+		    VB2_SHARED_DATA_VERSION_MINOR == 1) {
+			/* update the vb2_context struct to add the boot_mode */
+			update_bootmode = true;
+		} else {
+			return VB2_ERROR_SHARED_DATA_VERSION;
+		}
+	}
 
 	/* Check workbuf integrity. */
 	if (cur_sd->workbuf_used < vb2_wb_round_up(sizeof(*cur_sd)))
@@ -87,6 +113,13 @@ vb2_error_t vb2api_relocate(void *new_workbuf, const void *cur_workbuf,
 	new_sd = new_workbuf;
 	new_sd->workbuf_size = size;
 	*ctxptr = &new_sd->ctx;
+
+	if (update_bootmode) {
+		struct vb2_context *ctx = *ctxptr;
+		enum vb2_boot_mode *boot_mode = (enum vb2_boot_mode *)&(ctx->boot_mode);
+		new_sd->struct_version_minor = 1;
+		*boot_mode = get_boot_mode(ctx);
+	}
 
 	return VB2_SUCCESS;
 }
